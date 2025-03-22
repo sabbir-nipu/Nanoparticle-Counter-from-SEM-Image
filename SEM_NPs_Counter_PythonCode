@@ -10,6 +10,7 @@ from scipy.stats import norm
 from tkinter import Tk, Button, Label, filedialog, messagebox, Entry, StringVar, OptionMenu, Checkbutton, IntVar, Frame, Text, Scrollbar, Canvas, Scale, HORIZONTAL, Toplevel
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+import datetime
 
 def load_image(image_path):
     """Load an image from a specified path."""
@@ -51,16 +52,16 @@ def preprocess_image(image):
     
     # Choose the better binary image
     if num_particles_adaptive > num_particles_otsu:
-        print("Using adaptive thresholding")
+        thresholding_type = "Adaptive"
         binary_image = binary_adaptive
     else:
-        print("Using Otsu's thresholding")
+        thresholding_type = "Otsu"
         binary_image = binary_otsu
     
     # Remove small objects (noise)
     cleaned_image = morphology.remove_small_objects(binary_image.astype(bool), min_size=50).astype(np.uint8) * 255
     
-    return blurred, binary_image, cleaned_image
+    return blurred, binary_image, cleaned_image, thresholding_type
 
 def segment_image(image):
     """Segment the image using Watershed algorithm."""
@@ -88,10 +89,10 @@ def analyze_sem_image(image_path, scale_bar_length, scale_bar_unit):
     """Analyze a single SEM image and return the diameters and labels."""
     image = load_image(image_path)
     scale_bar_length_um = convert_scale_bar_length(scale_bar_length, scale_bar_unit)
-    blurred, binary_image, cleaned_image = preprocess_image(image)
+    blurred, binary_image, cleaned_image, thresholding_type = preprocess_image(image)
     distance, sure_fg, sure_bg, markers, labels = segment_image(cleaned_image)
     diameters_nm = measure_diameters(labels, image.shape, scale_bar_length_um)
-    return diameters_nm, labels, blurred, binary_image, cleaned_image, distance, sure_fg, sure_bg, markers, image
+    return diameters_nm, labels, blurred, binary_image, cleaned_image, distance, sure_fg, sure_bg, markers, image, thresholding_type
 
 # GUI Functions
 def browse_image():
@@ -107,7 +108,7 @@ def browse_image():
         analyze_button.config(state="normal")
 
 def analyze_image():
-    global main_image, blurred, binary_image, cleaned_image, distance, sure_fg, sure_bg, markers, labels
+    global main_image, blurred, binary_image, cleaned_image, distance, sure_fg, sure_bg, markers, labels, thresholding_type
     
     try:
         scale_bar_length = float(scale_bar_length_entry.get())
@@ -126,7 +127,7 @@ def analyze_image():
         status_label.config(text="Status: Analyzing...")
         window.update_idletasks()
         (diameters_nm, labels, blurred, binary_image, cleaned_image, distance, 
-         sure_fg, sure_bg, markers, main_image) = analyze_sem_image(file_path, scale_bar_length, scale_bar_unit)
+         sure_fg, sure_bg, markers, main_image, thresholding_type) = analyze_sem_image(file_path, scale_bar_length, scale_bar_unit)
         diameters_filtered = [d for d in diameters_nm if 1 <= d <= 100]
 
         if len(diameters_filtered) == 0:
@@ -136,11 +137,28 @@ def analyze_image():
 
         mean_diameter = np.mean(diameters_filtered)
         std_diameter = np.std(diameters_filtered)
-        result_label.config(text=f"Mean = {mean_diameter:.2f} ± {std_diameter:.2f} nm")
+        
+        # Update the status label
+        status_label.config(text="Status: Analysis Complete")
+        
+        # Clear previous results from the visualization frame
+        for widget in visualization_frame.winfo_children():
+            widget.destroy()
 
-        for widget in canvas_frame.winfo_children():
-            if widget not in [browse_button, file_label, scale_bar_frame, histogram_frame, gaussian_frame, table_check, analyze_button, result_label, status_label]:
-                widget.destroy()
+        # Add thresholding and mean output above the diagram and table
+        results_frame = Frame(visualization_frame)
+        results_frame.pack(fill="x", pady=5)
+
+        thresholding_label = Label(results_frame, text="Thresholding: ")
+        thresholding_label.pack(side="left", padx=5)
+        thresholding_value = Label(results_frame, text=f"{thresholding_type}", fg="red", font=("Arial", 10, "bold"))
+        thresholding_value.pack(side="left", padx=5)
+
+        result_label = Label(results_frame, text="Mean = ")
+        result_label.pack(side="left", padx=5)
+        result_value = Label(results_frame, text=f"{mean_diameter:.2f} ± {std_diameter:.2f} nm", fg="red", font=("Arial", 10, "bold"))
+        result_value.pack(side="left", padx=5)
+
 
         if show_table.get():
             hist, bin_edges = np.histogram(diameters_filtered, bins=20, range=(1, 100))
@@ -148,7 +166,7 @@ def analyze_image():
                 "Diameter Range (nm)": [f"{bin_edges[i]:.2f}–{bin_edges[i+1]:.2f}" for i in range(len(bin_edges) - 1)],
                 "Count": hist
             })
-            table_frame = Frame(canvas_frame)
+            table_frame = Frame(visualization_frame)
             table_frame.pack(fill="both", expand=True)
             table_text = Text(table_frame, wrap="none", width=40, height=10)
             table_text.insert("end", table_data.to_string(index=False))
@@ -172,29 +190,36 @@ def analyze_image():
             ax.set_xlabel('Diameter (nm)')
             ax.set_ylabel('Count')
             ax.set_title(f'Diameter Distribution (1–100 nm) - {os.path.basename(file_path)}')
-            ax.legend()
 
-            canvas_plot = FigureCanvasTkAgg(fig, master=canvas_frame)
+            if show_legend.get():
+                ax.legend()
+            if show_mean_sd.get():
+                 # Add mean ± standard deviation in a text box
+                text_box = f"Mean = {mean_diameter:.2f} ± {std_diameter:.2f} nm"
+                ax.text(0.97, 0.95, text_box, transform=ax.transAxes, fontsize=10, verticalalignment='top', horizontalalignment='right',
+                bbox=dict(facecolor='white', alpha=0.8, edgecolor='black', boxstyle='round,pad=0.5'))
+
+            canvas_plot = FigureCanvasTkAgg(fig, master=visualization_frame)
             canvas_plot.draw()
             canvas_plot.get_tk_widget().pack(fill="both", expand=True)
-            toolbar_frame = Frame(canvas_frame)
+            toolbar_frame = Frame(visualization_frame)
             toolbar_frame.pack(fill="x")
             toolbar = NavigationToolbar2Tk(canvas_plot, toolbar_frame)
             toolbar.update()
 
+      
         # Add Save Results and Verification buttons
-        button_frame = Frame(canvas_frame)
+        button_frame = Frame(visualization_frame)
         button_frame.pack(fill="x", pady=5)
 
-        save_button = Button(button_frame, text="Save Results", command=lambda: save_results(diameters_filtered))
+        save_button = Button(button_frame, text="Save Results", command=lambda: save_results(diameters_filtered, fig))
         save_button.pack(side="left", padx=5)
 
         verify_button = Button(button_frame, text="Verification", command=open_verification_window)
         verify_button.pack(side="left", padx=5)
-
+        
         canvas_frame.update_idletasks()
         canvas.config(scrollregion=canvas.bbox("all"))
-        status_label.config(text="Status: Analysis Complete")
     except Exception as e:
         messagebox.showerror("Error", f"An error occurred: {e}")
         status_label.config(text="Status: Idle")
@@ -268,7 +293,7 @@ def open_verification_window():
 def on_mouse_wheel(event):
     canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-def save_results(diameters_filtered):
+def save_results(diameters_filtered, fig=None):
     save_path = filedialog.asksaveasfilename(
         title="Save Results",
         filetypes=[("CSV files", "*.csv"), ("PNG files", "*.png"), ("All files", "*.*")]
@@ -282,8 +307,8 @@ def save_results(diameters_filtered):
                 "Count": hist
             })
             table_data.to_csv(save_path, index=False)
-        elif save_path.endswith(".png"):
-            analyze_image.canvas_plot.figure.savefig(save_path)
+        elif save_path.endswith(".png") and fig is not None:
+            fig.savefig(save_path)
         messagebox.showinfo("Success", "Results saved successfully.")
 
 # Create the main window
@@ -301,6 +326,7 @@ canvas.bind_all("<MouseWheel>", on_mouse_wheel)
 canvas_frame = Frame(canvas)
 canvas.create_window((0, 0), window=canvas_frame, anchor="nw")
 
+# Input section
 browse_button = Button(canvas_frame, text="Browse Image", command=browse_image)
 browse_button.pack(pady=10)
 
@@ -351,13 +377,31 @@ show_table = IntVar(value=0)
 table_check = Checkbutton(canvas_frame, text="Show Diameter and Count Table", variable=show_table)
 table_check.pack(pady=5)
 
+legend_frame = Frame(canvas_frame)
+legend_frame.pack(fill="x", pady=5)
+show_legend = IntVar(value=1)
+legend_checkbox = Checkbutton(legend_frame, text="Show Legend", variable=show_legend)
+legend_checkbox.pack(side="left", padx=5)
+
+show_mean_sd = IntVar(value=0)
+mean_sd_checkbox = Checkbutton(legend_frame, text="Show Mean ± SD", variable=show_mean_sd)
+mean_sd_checkbox.pack(side="left", padx=5)
+
 analyze_button = Button(canvas_frame, text="Analyze Image", command=analyze_image, state="disabled")
 analyze_button.pack(pady=10)
 
-result_label = Label(canvas_frame, text="Mean = N/A ± N/A nm")
-result_label.pack(pady=10)
-
+# Status section
 status_label = Label(canvas_frame, text="Status: Idle")
 status_label.pack(pady=5)
+
+# Visualization frame - will be after the status
+visualization_frame = Frame(canvas_frame)
+visualization_frame.pack(fill="both", expand=True, pady=5)
+
+
+# Add timestamp at the bottom
+timestamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+timestamp_label = Label(canvas_frame, text=f"Calculated at: {timestamp} UTC ", font=("Arial", 8))
+timestamp_label.pack(side="bottom", pady=5)
 
 window.mainloop()
